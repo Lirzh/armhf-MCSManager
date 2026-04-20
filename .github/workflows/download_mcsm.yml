@@ -9,102 +9,93 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write    # 必须：允许创建 Release 和 Push 代码
+      contents: write    # 必须权限
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取完整历史，方便 git 操作
+          fetch-depth: 0
 
-      - name: Install dependencies (jq, gh)
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y jq gh
 
-      - name: Download latest official MCSManager
+      # 🔥 关键修复：删除仓库自带的旧 mcsmanager 文件夹，避免冲突
+      - name: Clean old files
         run: |
-          echo "📥 下载官方最新 Linux 版本..."
-          wget -q -O mcsmanager_linux_release.tar.gz https://github.com/MCSManager/MCSManager/releases/latest/download/mcsmanager_linux_release.tar.gz
+          rm -rf mcsmanager/
 
+      # 下载官方最新版本
+      - name: Download latest MCSManager
+        run: |
+          echo "📥 下载官方最新版..."
+          wget -O mcsmanager_linux.tar.gz https://github.com/MCSManager/MCSManager/releases/latest/download/mcsmanager_linux_release.tar.gz
+
+      # 解压
       - name: Extract package
         run: |
-          echo "📂 解压文件..."
-          tar -zxf mcsmanager_linux_release.tar.gz
+          echo "📂 解压中..."
+          tar -zxf mcsmanager_linux.tar.gz
 
-      - name: Get version from package.json
+      # 🔥 关键修复：正确读取官方新版本
+      - name: Get official latest version
         id: get_version
         run: |
-          if [ ! -f "mcsmanager/daemon/package.json" ]; then
-            echo "❌ 未找到版本文件，退出"
-            exit 1
-          fi
           VERSION=$(jq -r '.version' mcsmanager/daemon/package.json)
-          echo "✅ 提取到版本：$VERSION"
+          echo "✅ 官方最新版本: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Check if release already exists
+      # 检查 Release 是否存在
+      - name: Check release exists
         id: check_release
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "✅ 版本 $TAG 已存在，跳过构建"
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "🔨 版本 $TAG 不存在，开始构建"
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare ARMv7l custom build
+      # 构建 ARM 版本
+      - name: Build ARMv7l version
         if: steps.check_release.outputs.exists == 'false'
         run: |
-          echo "🧹 清理临时文件..."
-          rm -f mcsmanager_linux_release.tar.gz
-
-          echo "📁 复制 ARM 依赖库..."
+          rm -f mcsmanager_linux.tar.gz
+          
+          # 复制 ARM 库
           mkdir -p mcsmanager/daemon/lib
-          if [ ! -f "lib/file_zip_linux_arm" ] || [ ! -f "lib/pty_linux_arm" ]; then
-            echo "❌ lib 目录缺失必要文件，终止"
-            exit 1
-          fi
           cp lib/file_zip_linux_arm mcsmanager/daemon/lib/
           cp lib/pty_linux_arm mcsmanager/daemon/lib/
-
-          echo "⚙️  修改内存参数 8192 → 1024"
+          
+          # 修改内存参数
           sed -i 's/--max-old-space-size=8192/--max-old-space-size=1024/g' mcsmanager/start-daemon.sh
           sed -i 's/--max-old-space-size=8192/--max-old-space-size=1024/g' mcsmanager/start-web.sh
-
-          echo "📦 压缩最终 ARMv7l 包..."
+          
+          # 打包
           tar -czf mcsmanager_armv7l_release.tar.gz mcsmanager
 
-      - name: Create GitHub Release and Upload
+      # 创建 Release
+      - name: Create release & upload
         if: steps.check_release.outputs.exists == 'false'
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
-          TITLE="MCSManager ARMv7l $TAG"
-          NOTES="自动构建 • 适配 ARMv7l 设备 • 基于官方最新版本"
-
           gh release create "$TAG" \
-            --title "$TITLE" \
-            --notes "$NOTES" \
-            --draft=false \
-            --prerelease=false
-
-          gh release upload "$TAG" ./mcsmanager_armv7l_release.tar.gz --clobber
+            --title "MCSManager ARMv7l $TAG" \
+            --notes "自动构建 ARMv7l 版本 | 基于官方最新版" \
+            --draft=false --prerelease=false
+          gh release upload "$TAG" mcsmanager_armv7l_release.tar.gz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit and push changes
+      # 提交变更
+      - name: Commit and push
         if: steps.check_release.outputs.exists == 'false'
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-          if ! git diff --quiet; then
-            git add .
-            git commit -m "Auto update: MCSManager ${{ steps.get_version.outputs.version }}"
-            git push
-          else
-            echo "✅ 无文件变更，无需提交"
-          fi
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit -m "Auto update: MCSManager ${{ steps.get_version.outputs.version }}"
+          git push
